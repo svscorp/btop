@@ -5,26 +5,29 @@ require 'time'
 QUARTER_CONST = 15
 
 connection = Mongo::Connection.new
-collection = connection['btop']['clicks']
+collection = connection['btop']
+
+# Find current quarter value
+def find_quarter()
+  current_time = Time.new()
+
+  return (current_time.min / QUARTER_CONST) - 1
+end
 
 # Routing for banner campaigns
 get '/campaigns/:id' do
-  data = find_banners(collection, params[:id].to_i)
+  current_quarter = find_quarter()
+  clicks_collection = collection["clicks_#{current_quarter}"]
+  data = find_banners(clicks_collection, params[:id].to_i)
 
   randIndex = rand(0..data.count-1)
   obj = data[randIndex]
-  "<img src='/images/image_#{obj['_id']['banner_id']}.png'/>"
-end
-
-# Find current quarter value
-def find_quarter
-  current_time = Time.new()
-  return current_time.min / QUARTER_CONST
+  "<img src='/images/image_#{obj['_id']['banner_id']}.png' title='Image from quarter# #{current_quarter}'/>"
 end
 
 # Finds and displays banners based on different performance numbers
 def find_banners(collection, campaign_id)
-  count_with_conversion = 15
+  count_with_conversion = get_filtered_data(collection, campaign_id, 'revenue', -1, { "revenue" => { "$gt" => 0 } }).count
 
   if count_with_conversion.between?(5, 9)
     return get_filtered_data(collection, campaign_id, 'revenue', count_with_conversion)
@@ -43,20 +46,24 @@ def get_filtered_data(collection, campaign_id, sort = 'clicks', limit = 10, matc
   match = { "campaign_id" => campaign_id }
   match = match.merge(matcher)
 
-  return collection.aggregate(
-    [
+  query = [
       {"$match" => match},
       {
-         "$group" => {
-           :_id => {
-             "campaign_id" => "$campaign_id",
-             "banner_id"   => "$banner_id"
-           },
-           :clicks => { "$sum" => 1 }
-         }
+          "$group" => {
+              :_id => {
+                  "campaign_id" => "$campaign_id",
+                  "banner_id"   => "$banner_id"
+              },
+              :clicks  => { "$sum" => 1 },
+              :revenue => { "$sum" => "$revenue" }
+          }
       },
-      { "$sort" => { "#{sort}" =>  -1 } },
-      { "$limit" => limit }
-    ]
-  )
+      { "$sort" => { "#{sort}" =>  -1 } }
+  ]
+
+  if limit != -1
+    query.push({ "$limit" => limit })
+  end
+
+  return collection.aggregate(query)
 end
