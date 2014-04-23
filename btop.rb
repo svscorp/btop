@@ -1,6 +1,8 @@
 require 'sinatra'
+require 'redis'
 require 'mongo'
 require 'time'
+require 'json'
 
 QUARTER_CONST = 15
 
@@ -23,7 +25,16 @@ end
 get '/campaigns/:id' do
   current_quarter = find_quarter()
   clicks_collection = collection["clicks_#{current_quarter}"]
-  data = find_banners(clicks_collection, params[:id].to_i)
+
+  redis = Redis.new
+  if (!redis['data'])
+    data = find_banners(clicks_collection, params[:id].to_i)
+    redis['data'] = data.to_json
+
+    redis.expire('data', 600)
+  elsif
+    data = JSON.parse(redis['data'])
+  end
 
   randomIndex = obtain_random_index(data.count)
 
