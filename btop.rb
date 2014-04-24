@@ -1,104 +1,105 @@
-require 'sinatra'
+require 'sinatra/base'
 require 'redis'
 require 'mongo'
 require 'time'
 require 'json'
 
-QUARTER_CONST = 15
+class Btop < Sinatra::Base
+  enable  :sessions, :logging
 
-connection = Mongo::Connection.new
-collection = connection['btop']
+  QUARTER_CONST = 15
 
-# Enabling sessions
-configure do
-  enable :sessions
-end
+  connection = Mongo::Connection.new
+  collection = connection['btop']
 
-# Find current quarter value
-def find_quarter()
-  current_time = Time.new()
+  # Routing for banner campaigns
+  get '/campaigns/:id' do
+    current_time = Time.new()
+    current_quarter = find_quarter(current_time)
 
-  return (current_time.min / QUARTER_CONST) + 1
-end
+    clicks_collection = collection["clicks_#{current_quarter}"]
 
-# Routing for banner campaigns
-get '/campaigns/:id' do
-  current_quarter = find_quarter()
-  clicks_collection = collection["clicks_#{current_quarter}"]
+    redis = Redis.new
+    if (!redis['data'])
+      data = find_banners(clicks_collection, params[:id].to_i)
+      redis['data'] = data.to_json
 
-  redis = Redis.new
-  if (!redis['data'])
-    data = find_banners(clicks_collection, params[:id].to_i)
-    redis['data'] = data.to_json
-
-    redis.expire('data', 600)
-  elsif
-    data = JSON.parse(redis['data'])
-  end
-
-  randomIndex = obtain_random_index(data.count)
-
-  obj = data[randomIndex]
-  "<img src='/images/image_#{obj['_id']['banner_id']}.png' title='Image from quarter# #{current_quarter}'/>"
-end
-
-# Finds and displays banners based on different performance numbers
-def find_banners(collection, campaign_id)
-  count_with_conversion = get_filtered_data(collection, campaign_id, 'revenue', -1, { "revenue" => { "$gt" => 0 } }).count
-
-  if count_with_conversion.between?(5, 9)
-    return get_filtered_data(collection, campaign_id, 'revenue', count_with_conversion)
-  elsif count_with_conversion.between?(0, 4)
-    top_revenue = []
-
-    if count_with_conversion > 0
-      top_revenue = get_filtered_data(collection, campaign_id, 'revenue', count_with_conversion)
+      redis.expire('data', 600)
+    elsif
+      data = JSON.parse(redis['data'])
     end
 
-    top_clicks = get_filtered_data(collection, campaign_id, 'clicks', 5 - count_with_conversion)
+    randomIndex = obtain_random_index(data.count)
 
-    return top_revenue + top_clicks
+    obj = data[randomIndex]
+    "<img src='/images/image_#{obj['_id']['banner_id']}.png' title='Image from quarter# #{current_quarter}'/>"
   end
 
-  return get_filtered_data(collection, campaign_id, 'revenue')
-end
-
-# Obtains random, but sequentially unique index per session
-def obtain_random_index(data_count)
-  index_array = Array.new(data_count){|i|i}
-  if session['key']
-    index_array.delete_at(session['key'])
+  # Find current quarter value
+  def find_quarter(time)
+    return (time.min / QUARTER_CONST) + 1
   end
 
-  randIndex = index_array[rand(0..index_array.count-1)]
-  session['key'] = randIndex
+  # Finds and displays banners based on different performance numbers
+  def find_banners(collection, campaign_id)
+    count_with_conversion = get_filtered_data(collection, campaign_id, 'revenue', -1, { "revenue" => { "$gt" => 0 } }).count
 
-  return randIndex
-end
+    if count_with_conversion.between?(5, 9)
+      return get_filtered_data(collection, campaign_id, 'revenue', count_with_conversion)
+    elsif count_with_conversion.between?(0, 4)
+      top_revenue = []
 
-# Shortcut for Mongo query
-def get_filtered_data(collection, campaign_id, sort = 'clicks', limit = 10, matcher = {})
-  match = { "campaign_id" => campaign_id }
-  match = match.merge(matcher)
+      if count_with_conversion > 0
+        top_revenue = get_filtered_data(collection, campaign_id, 'revenue', count_with_conversion)
+      end
 
-  query = [
-      {"$match" => match},
-      {
-          "$group" => {
-              :_id => {
-                  "campaign_id" => "$campaign_id",
-                  "banner_id"   => "$banner_id"
-              },
-              :clicks  => { "$sum" => 1 },
-              :revenue => { "$sum" => "$revenue" }
-          }
-      },
-      { "$sort" => { "#{sort}" =>  -1 } }
-  ]
+      top_clicks = get_filtered_data(collection, campaign_id, 'clicks', 5 - count_with_conversion)
 
-  if limit != -1
-    query.push({ "$limit" => limit })
+      return top_revenue + top_clicks
+    end
+
+    return get_filtered_data(collection, campaign_id, 'revenue')
   end
 
-  return collection.aggregate(query)
+  # Obtains random, but sequentially unique index per session
+  def obtain_random_index(data_count)
+    index_array = Array.new(data_count){|i|i}
+    if session['key']
+      index_array.delete_at(session['key'])
+    end
+
+    randIndex = index_array[rand(0..index_array.count-1)]
+    session['key'] = randIndex
+
+    return randIndex
+  end
+
+  # Shortcut for Mongo query
+  def get_filtered_data(collection, campaign_id, sort = 'clicks', limit = 10, matcher = {})
+    match = { "campaign_id" => campaign_id }
+    match = match.merge(matcher)
+
+    query = [
+        {"$match" => match},
+        {
+            "$group" => {
+                :_id => {
+                    "campaign_id" => "$campaign_id",
+                    "banner_id"   => "$banner_id"
+                },
+                :clicks  => { "$sum" => 1 },
+                :revenue => { "$sum" => "$revenue" }
+            }
+        },
+        { "$sort" => { "#{sort}" =>  -1 } }
+    ]
+
+    if limit != -1
+      query.push({ "$limit" => limit })
+    end
+
+    return collection.aggregate(query)
+  end
+
+  run! if app_file == $0
 end
